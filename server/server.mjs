@@ -10,21 +10,54 @@ const io = new Server(server);
 
 app.use(express.static("public"));
 
-const port = new SerialPort({ path: "/dev/ttyUSB1", baudRate: 115200 });
+const port = new SerialPort({ path: "/dev/ttyUSB0", baudRate: 115200 });
 const parser = port.pipe(new ReadlineParser({ delimiter: "\n" }));
 
-// Load OUI CSV
+// Load OUI CSV - properly parse CSV with quoted fields
 const ouiMap = {};
-fs.readFileSync("oui.csv", "utf8")
-  .split("\n")
-  .forEach((line) => {
-    const [prefix, vendor] = line.split(",");
-    if (prefix && vendor) ouiMap[prefix.trim().toUpperCase()] = vendor.trim();
-  });
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+const lines = fs.readFileSync("oui.csv", "utf8").split("\n");
+// Skip header line (line 0)
+for (let i = 1; i < lines.length; i++) {
+  const line = lines[i].trim();
+  if (!line) continue;
+  
+  const cols = parseCSVLine(line);
+  // Format: Registry, Assignment (MAC prefix), Organization Name, Organization Address
+  if (cols.length >= 3) {
+    const prefix = cols[1].trim().toUpperCase();
+    const vendor = cols[2].trim();
+    if (prefix && vendor && prefix.length === 6) {
+      ouiMap[prefix] = vendor;
+    }
+  }
+}
 
 function getVendor(mac) {
-  const prefix = mac.slice(0, 8).toUpperCase();
-  return ouiMap[prefix] || "Unknown";
+  // Extract first 6 hex characters from MAC (OUI is 3 bytes = 6 hex chars)
+  // Handle formats: "AA:BB:CC:DD:EE:FF" or "AABBCCDDEEFF"
+  const cleanMac = mac.replace(/[:-]/g, '').toUpperCase();
+  const prefix = cleanMac.slice(0, 6);
+  return ouiMap[prefix] || "Randomized";
 }
 
 parser.on("data", (line) => {
