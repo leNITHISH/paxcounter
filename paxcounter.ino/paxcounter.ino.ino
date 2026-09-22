@@ -25,10 +25,13 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     mbedtls_md_finish(&ctx, hash);
     mbedtls_md_free(&ctx);
 
-    // Print first 8 bytes of hash as hex, plus RSSI
-    Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d\n",
+    // pkt->rx_ctrl.channel is the channel this packet was actually received on,
+    // reported by the radio itself. That's more accurate than reading back
+    // whatever channel loop() last requested, which can be mid-hop by the
+    // time a packet lands -- so we log the hardware's value, not our own state.
+    Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d\n",
         hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-        pkt->rx_ctrl.rssi);
+        pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
 }
 
 void setup() {
@@ -45,7 +48,9 @@ void setup() {
 }
 
 void loop() {
-    //Serial.println("dis werks");
+    // Hop across the three non-overlapping 2.4GHz channels for broader coverage.
+    // The channel actually stamped on each packet is read from rx_ctrl above,
+    // not tracked separately here.
     static uint8_t channel = 1;
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     channel = (channel % 11) + 1;

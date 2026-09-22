@@ -37,6 +37,14 @@ public class App {
 
         TtlCache cache = new TtlCache(10_000); // 10s TTL
         MetricsLogger logger = new MetricsLogger("metrics.csv");
+        RawEventLogger rawLogger = new RawEventLogger("raw_probes.csv");
+
+        // flush and close both CSVs cleanly on Ctrl+C instead of losing
+        // whatever's still buffered when the process is killed
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.close();
+            rawLogger.close();
+        }));
 
         long totalProbes = 0;
         long uniqueDevices = 0;
@@ -56,7 +64,7 @@ public class App {
                         lineBuffer.setLength(0);
                         if (line.isEmpty()) continue;
 
-                        // expected format: <hash>,<rssi>
+                        // expected format: <hash>,<rssi>,<channel>
                         String[] parts = line.split(",");
                         if (parts.length < 1) continue;
 
@@ -66,9 +74,26 @@ public class App {
                             continue;
                         }
 
+                        int rssi = 0;
+                        int channel = 0;
+                        if (parts.length >= 2) {
+                            try {
+                                rssi = Integer.parseInt(parts[1].trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+                        if (parts.length >= 3) {
+                            try {
+                                channel = Integer.parseInt(parts[2].trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+
                         totalProbes++;
                         boolean isNew = cache.registerAndCheckNew(hash);
                         if (isNew) uniqueDevices++;
+
+                        rawLogger.logEvent(hash, rssi, channel);
 
                         System.out.printf("Received: %s | new=%b | unique=%d | total=%d%n",
                                 line, isNew, uniqueDevices, totalProbes);
