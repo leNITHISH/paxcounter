@@ -26,6 +26,7 @@ ESP32 (Arduino/C++), Java (jSerialComm), DuckDB
 - TTL cache (10s window): mobile OSes randomize MAC addresses periodically as a privacy measure. Without deduplication, this randomization would be misread as new devices, wildly overcounting. A short-lived cache (ConcurrentHashMap<macHash, lastSeenTimestamp>) filters this noise while still counting genuinely new devices.
 - DuckDB over Postgres/MySQL: this workload is read-heavy analytical querying (aggregates, trends) over a single growing log, not high-frequency transactional writes from concurrent users. DuckDB's columnar engine is fast for GROUP BY/COUNT DISTINCT-style queries and needs no running server -- a better fit than a full OLTP database for this use case.
 - Raw byte polling over BufferedReader.readLine(): encountered inconsistent behavior with jSerialComm's blocking read mode on Linux ttyACM devices; switched to semi-blocking readBytes() with manual line-splitting for reliable delivery.
+- Auto-detected serial port instead of a hardcoded path: scans all available ports via jSerialComm and matches on the ESP32's USB descriptor (Espressif/JTAG/CDC), so the same code runs unmodified across Linux, macOS, and Windows without the user needing to know the device path in advance.
 
 ## Results (test run, 18 Sep 2026)
 - 178 total probe requests captured
@@ -42,3 +43,4 @@ ESP32 (Arduino/C++), Java (jSerialComm), DuckDB
 ## Resume bullets
 - Designed and built a Wi-Fi crowd-density counter in Java, implementing a custom TTL-based deduplication cache (ConcurrentHashMap, 10s window) that filtered 75.7% of MAC-randomization noise across 178 captured probe requests, correctly identifying 40 unique devices in a live 6-minute test.
 - Logged real-time metrics to CSV and queried session data with DuckDB to surface peak device concurrency and detection trends.
+- Implemented automatic serial port detection via USB descriptor matching, making the ingestion service portable across Linux, macOS, and Windows with no hardcoded configuration.
