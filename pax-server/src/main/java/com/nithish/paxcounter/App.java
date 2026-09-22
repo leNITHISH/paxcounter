@@ -3,8 +3,28 @@ package com.nithish.paxcounter;
 import com.fazecast.jSerialComm.SerialPort;
 
 public class App {
+	private static SerialPort findEspPort() {
+    	SerialPort[] ports = SerialPort.getCommPorts();
+    	for (SerialPort p : ports) {
+        	String desc = p.getPortDescription().toLowerCase();
+        	String product = p.getDescriptivePortName().toLowerCase();
+      	  if (desc.contains("espressif") || product.contains("espressif")
+                	|| desc.contains("jtag") || desc.contains("cdc")) {
+            	return p;
+        	}
+    	}
+    	return null;
+	}
     public static void main(String[] args) throws Exception {
-        SerialPort port = SerialPort.getCommPort("/dev/ttyACM1");
+		SerialPort port = findEspPort();
+		if (port == null) {
+    		System.err.println("No ESP32 found. Available ports:");
+    		for (SerialPort p : SerialPort.getCommPorts()) {
+        		System.err.println("  " + p.getSystemPortName() + " - " + p.getDescriptivePortName());
+    		}
+   		 System.exit(1);
+	}
+	System.out.println("Found ESP32 on: " + port.getSystemPortName());
         port.setBaudRate(115200);
         port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 0);
 
