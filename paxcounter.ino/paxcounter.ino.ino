@@ -6,6 +6,14 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_MGMT) return;
 
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+
+    // sig_len is the actual captured length; frames shorter than a full
+    // header (24 bytes: 2 frame control + 2 duration + 3x6 address + 2 seq
+    // control) don't have a sequence control field, and reading payload[22]
+    // /[23] past the end of a short capture is an out-of-bounds read that
+    // was crashing the chip and causing the USB-JTAG serial to keep dropping.
+    if (pkt->rx_ctrl.sig_len < 24) return;
+
     uint8_t *payload = pkt->payload;
 
     // Frame Control field: check if it's a probe request (subtype 0x40)
@@ -14,6 +22,14 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
 
     // Source MAC is bytes 10-15 of the 802.11 header
     uint8_t *srcMac = &payload[10];
+
+    // Sequence Control is bytes 22-23 (little-endian): low 4 bits are the
+    // fragment number, top 12 bits are the sequence number. The radio's
+    // sequence counter keeps incrementing across MAC address rotations, so
+    // this lets the server link probes from the same physical device even
+    // when its randomized MAC changes.
+    uint16_t seqControl = payload[22] | (payload[23] << 8);
+    uint16_t seqNum = seqControl >> 4;
 
     // Simple hash (SHA-256, truncated) for privacy
     unsigned char hash[32];
@@ -29,9 +45,9 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     // reported by the radio itself. That's more accurate than reading back
     // whatever channel loop() last requested, which can be mid-hop by the
     // time a packet lands -- so we log the hardware's value, not our own state.
-    Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d\n",
+    Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d\n",
         hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-        pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
+        pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel, seqNum);
 }
 
 void setup() {

@@ -15,9 +15,31 @@ public class App {
     	}
     	return null;
 	}
+
+	private static SerialPort openEspPort(SerialPort port) {
+		port.setBaudRate(115200);
+		port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 0);
+		return port.openPort() ? port : null;
+	}
+
+	// Blocks until the ESP32 shows up and opens cleanly, retrying every 2s.
+	// Used to reconnect after the device is unplugged/reset mid-run, so the
+	// server doesn't just die on the next disconnect.
+	private static SerialPort waitForEspReconnect() throws InterruptedException {
+		System.err.println("ESP32 disconnected, waiting for it to come back...");
+		while (true) {
+			SerialPort port = findEspPort();
+			if (port != null && openEspPort(port) != null) {
+				System.out.println("Reconnected on: " + port.getSystemPortName());
+				return port;
+			}
+			Thread.sleep(2000);
+		}
+	}
+
     public static void main(String[] args) throws Exception {
 		SerialPort port = findEspPort();
-		if (port == null) {
+		if (port == null || openEspPort(port) == null) {
     		System.err.println("No ESP32 found. Available ports:");
     		for (SerialPort p : SerialPort.getCommPorts()) {
         		System.err.println("  " + p.getSystemPortName() + " - " + p.getDescriptivePortName());
@@ -25,17 +47,10 @@ public class App {
    		 System.exit(1);
 	}
 	System.out.println("Found ESP32 on: " + port.getSystemPortName());
-        port.setBaudRate(115200);
-        port.setComPortTimeouts(SerialPort.TIMEOUT_READ_SEMI_BLOCKING, 1000, 0);
-
-        boolean opened = port.openPort();
-        if (!opened) {
-            System.err.println("Failed to open port");
-            System.exit(1);
-        }
         System.out.println("Port opened, polling...");
 
         TtlCache cache = new TtlCache(10_000); // 10s TTL
+        SequenceLinker seqLinker = new SequenceLinker();
         MetricsLogger logger = new MetricsLogger("metrics.csv");
         RawEventLogger rawLogger = new RawEventLogger("raw_probes.csv");
 
@@ -56,6 +71,12 @@ public class App {
 
         while (true) {
             int numRead = port.readBytes(buffer, buffer.length);
+            if (numRead < 0) {
+                port.closePort();
+                port = waitForEspReconnect();
+                lineBuffer.setLength(0);
+                continue;
+            }
             if (numRead > 0) {
                 for (int i = 0; i < numRead; i++) {
                     char c = (char) buffer[i];
@@ -64,7 +85,7 @@ public class App {
                         lineBuffer.setLength(0);
                         if (line.isEmpty()) continue;
 
-                        // expected format: <hash>,<rssi>,<channel>
+                        // expected format: <hash>,<rssi>,<channel>,<seq>
                         String[] parts = line.split(",");
                         if (parts.length < 1) continue;
 
@@ -76,6 +97,7 @@ public class App {
 
                         int rssi = 0;
                         int channel = 0;
+                        int seq = 0;
                         if (parts.length >= 2) {
                             try {
                                 rssi = Integer.parseInt(parts[1].trim());
@@ -88,12 +110,19 @@ public class App {
                             } catch (NumberFormatException ignored) {
                             }
                         }
+                        if (parts.length >= 4) {
+                            try {
+                                seq = Integer.parseInt(parts[3].trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
 
                         totalProbes++;
-                        boolean isNew = cache.registerAndCheckNew(hash);
+                        String canonicalHash = seqLinker.resolve(hash, seq);
+                        boolean isNew = cache.registerAndCheckNew(canonicalHash);
                         if (isNew) uniqueDevices++;
 
-                        rawLogger.logEvent(hash, rssi, channel);
+                        rawLogger.logEvent(hash, canonicalHash, rssi, channel, seq);
 
                         System.out.printf("Received: %s | new=%b | unique=%d | total=%d%n",
                                 line, isNew, uniqueDevices, totalProbes);

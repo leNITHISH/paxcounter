@@ -19,13 +19,16 @@ public class RawEventLogger {
         boolean isNewFile = !new java.io.File(filePath).exists();
         writer = new PrintWriter(new FileWriter(filePath, true));
         if (isNewFile) {
-            writer.println("timestamp,mac_hash,rssi,channel");
+            writer.println("timestamp,mac_hash,canonical_hash,rssi,channel,seq");
             writer.flush();
         }
     }
 
-    public void logEvent(String macHash, int rssi, int channel) {
-        writer.printf("%s,%s,%d,%d%n", Instant.now(), macHash, rssi, channel);
+    // canonicalHash is the id SequenceLinker resolved this sighting to for
+    // uniqueness counting -- equal to macHash unless it got linked to an
+    // earlier, differently-randomized MAC from the same radio.
+    public void logEvent(String macHash, String canonicalHash, int rssi, int channel, int seq) {
+        writer.printf("%s,%s,%s,%d,%d,%d%n", Instant.now(), macHash, canonicalHash, rssi, channel, seq);
         writer.flush();
     }
 
