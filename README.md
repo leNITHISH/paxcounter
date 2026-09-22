@@ -5,6 +5,7 @@ A Wi-Fi crowd-density counter: an ESP32 in 802.11 promiscuous mode hops across c
 ## Architecture
 
 ESP32 (promiscuous mode, channel hopping 1-11)
+   |  RAM ring buffer -- queues sightings while USB is disconnected, drains once reconnected
    |  UART @ 115200 baud -- hashed_mac,rssi,channel,seq
    v
 Java Service
@@ -22,7 +23,10 @@ ESP32-C3 (Arduino/C++), Java (jSerialComm), DuckDB
 ## Run
 1. Flash the ESP32: `./flash.sh` (defaults to /dev/ttyACM0, pass a different port as the first arg)
 2. Run the server: `./run.sh`
-3. Query results: duckdb, then CREATE TABLE probes AS SELECT * FROM read_csv_auto('pax-server/metrics.csv');
+3. Query results: `cd pax-server && duckdb -c ".read analytics.sql"` (peak concurrent devices, RSSI/channel breakdowns, activity over time)
+
+## Testing
+`cd pax-server && mvn test` runs the unit tests: `TtlCacheTest` and `SequenceLinkerTest` cover the two deduplication layers directly (TTL expiry, sequence-number linking across rotated MACs, window expiry) without needing real hardware.
 
 ## Flashing notes
 - Board: ESP32-C3 Dev Module (FQBN esp32:esp32:esp32c3)
@@ -35,11 +39,13 @@ ESP32-C3 (Arduino/C++), Java (jSerialComm), DuckDB
 - Raw byte polling over BufferedReader.readLine(): encountered inconsistent behavior with jSerialComm's blocking read mode on Linux ttyACM devices; switched to semi-blocking readBytes() with manual line-splitting for reliable delivery.
 - Auto-detected serial port instead of a hardcoded path: scans all available ports via jSerialComm and matches on the ESP32's USB descriptor (Espressif/JTAG/CDC), so the same code runs unmodified across Linux, macOS, and Windows without the user needing to know the device path in advance.
 - Automatic serial reconnect: if the ESP32 drops off USB, a reset, a disconnect, a flaky USB-Serial/JTAG link, the service used to crash or spin. It now closes the stale port and polls every 2s until the device reappears, so a transient drop doesn't require restarting the whole process.
+- On-device ring buffer instead of printing straight from the promiscuous callback: probe sightings are queued into a fixed-size RAM ring buffer and only drained over serial once `Serial.isConnected()` is true, so a USB comms drop (the chip stays powered, the link just blips, e.g. the USB-Serial/JTAG flakiness above) no longer silently loses whatever was captured during the gap. This does not survive an actual power loss (unplugging the board's only USB cable cuts power too, wiping RAM); testing it for real means powering the board from a separate source and only pulling the data connection.
 
 ## Known limitations / future work
-- No offline buffering: data seen during a USB drop is lost even though the service now reconnects automatically once the ESP32 is back. An SD card write-buffer with replay-on-reconnect would close this gap.
+- Offline buffering only covers comms drops, not power loss: the on-device ring buffer queues sightings through a USB link blip and replays them once reconnected, but it lives in RAM, so it can't survive the board actually losing power (e.g. unplugging its only USB cable, which cuts power and data at once). Powering the board separately and only disconnecting the data line avoids that; true survival across a full power cycle would need flash/SD storage instead.
 - No MQTT decoupling yet: ingestion and analytics currently run in the same process. Decoupling via MQTT (ESP32/host -> broker -> subscriber) would allow multiple downstream consumers (dashboard, alerting, storage) without coupling them to the ingestion service.
 - Modern probe request suppression: newer iOS/Android versions send fewer probe requests by default for privacy, reducing detection rate for idle devices with screens off.
+- Connected devices go quiet: probe requests are for network discovery, so once a device associates with an AP it largely stops sending them. This tool mostly measures devices actively searching for a network (just arrived, screen freshly woken, Wi-Fi picker open), not every device present in the room, which is a real gap between the "crowd-density counter" framing and what actually gets counted.
 - Sequence-number linking is heuristic: the forward-gap threshold and time window are reasonable defaults but not validated against a large real-world dataset; long silences or heavy nearby traffic could misclassify devices in either direction.
 
 ## Results (test run, 18 Sep 2026)
@@ -56,3 +62,4 @@ Note: this benchmark predates channel hopping and sequence-number linking, so it
 - Implemented automatic serial port detection via USB descriptor matching, making the ingestion service portable across Linux, macOS, and Windows with no hardcoded configuration.
 - Designed a heuristic linking layer using 802.11 sequence numbers to associate probe requests across MAC address rotations, improving unique-device accuracy beyond what exact-hash deduplication alone can provide.
 - Diagnosed and fixed an out-of-bounds memory read in the ESP32 firmware's 802.11 frame parsing that was crashing the chip under real traffic, and added automatic serial reconnect handling so the ingestion service recovers from USB/device drops without manual intervention.
+- Built a single-producer/single-consumer RAM ring buffer on the ESP32 to queue captured sightings through USB comms drops, verified correct (FIFO order, wraparound, overflow handling) with a standalone unit test isolated from hardware before flashing.

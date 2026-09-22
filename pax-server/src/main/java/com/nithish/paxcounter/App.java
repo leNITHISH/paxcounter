@@ -90,7 +90,11 @@ public class App {
                         if (parts.length < 1) continue;
 
                         String hash = parts[0].trim();
-                        if (hash.equalsIgnoreCase("Sniffer started")) {
+                        // Anything that isn't a 16-hex-char mac hash is a
+                        // status/diagnostic line (e.g. "Sniffer started", or
+                        // the ring buffer's "WARN dropped N probes..."), not
+                        // a probe sighting -- echo it but don't count it.
+                        if (!hash.matches("[0-9a-fA-F]{16}")) {
                             System.out.println(line);
                             continue;
                         }

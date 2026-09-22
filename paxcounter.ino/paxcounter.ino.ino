@@ -2,6 +2,37 @@
 #include "esp_wifi.h"
 #include "mbedtls/md.h"
 
+// Decoded probe sightings, buffered here instead of printed straight from
+// the callback, so a temporary USB disconnect doesn't just drop them. The
+// callback runs in the WiFi driver's own task (producer); loop() drains it
+// (consumer) -- a single-producer/single-consumer ring, so plain volatile
+// indices are enough without a lock. One slot is always left empty to tell
+// full apart from empty, so RING_CAPACITY holds RING_CAPACITY - 1 usable
+// entries.
+#define RING_CAPACITY 201
+
+struct ProbeSighting {
+    uint8_t hash[8];
+    int8_t rssi;
+    uint8_t channel;
+    uint16_t seq;
+};
+
+static ProbeSighting ringBuffer[RING_CAPACITY];
+static volatile uint16_t ringHead = 0; // next write slot (producer owns this)
+static volatile uint16_t ringTail = 0; // next read slot (consumer owns this)
+static volatile uint32_t ringDropped = 0;
+
+static void ringPush(const ProbeSighting &s) {
+    uint16_t nextHead = (ringHead + 1) % RING_CAPACITY;
+    if (nextHead == ringTail) {
+        ringDropped++; // buffer full: drop the newest instead of the oldest
+        return;
+    }
+    ringBuffer[ringHead] = s;
+    ringHead = nextHead;
+}
+
 void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_MGMT) return;
 
@@ -45,9 +76,12 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     // reported by the radio itself. That's more accurate than reading back
     // whatever channel loop() last requested, which can be mid-hop by the
     // time a packet lands -- so we log the hardware's value, not our own state.
-    Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d\n",
-        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-        pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel, seqNum);
+    ProbeSighting sighting;
+    memcpy(sighting.hash, hash, 8);
+    sighting.rssi = pkt->rx_ctrl.rssi;
+    sighting.channel = pkt->rx_ctrl.channel;
+    sighting.seq = seqNum;
+    ringPush(sighting);
 }
 
 void setup() {
@@ -64,6 +98,25 @@ void setup() {
 }
 
 void loop() {
+    // Only drain into Serial when a host is actually listening -- printing
+    // to a disconnected USB CDC link is exactly how sightings used to get
+    // lost, so leave them queued in the ring until isConnected() is true.
+    if (Serial.isConnected()) {
+        ProbeSighting s;
+        while (ringTail != ringHead) {
+            s = ringBuffer[ringTail];
+            Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d\n",
+                s.hash[0], s.hash[1], s.hash[2], s.hash[3],
+                s.hash[4], s.hash[5], s.hash[6], s.hash[7],
+                s.rssi, s.channel, s.seq);
+            ringTail = (ringTail + 1) % RING_CAPACITY;
+        }
+        if (ringDropped > 0) {
+            Serial.printf("WARN dropped %u probes, ring buffer was full\n", ringDropped);
+            ringDropped = 0;
+        }
+    }
+
     // Hop across the three non-overlapping 2.4GHz channels for broader coverage.
     // The channel actually stamped on each packet is read from rx_ctrl above,
     // not tracked separately here.
