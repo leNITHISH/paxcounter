@@ -20,13 +20,13 @@ metrics.csv / raw_probes.csv -> DuckDB queries
 ESP32-C3 (Arduino/C++), Java (jSerialComm), DuckDB
 
 ## Run
-1. Flash paxcounter.ino to the ESP32 (see Flashing notes below)
-2. mvn compile exec:java -Dexec.mainClass="com.nithish.paxcounter.App"
-3. Query results: duckdb, then CREATE TABLE probes AS SELECT * FROM read_csv_auto('metrics.csv');
+1. Flash the ESP32: `./flash.sh` (defaults to /dev/ttyACM0, pass a different port as the first arg)
+2. Run the server: `./run.sh`
+3. Query results: duckdb, then CREATE TABLE probes AS SELECT * FROM read_csv_auto('pax-server/metrics.csv');
 
 ## Flashing notes
 - Board: ESP32-C3 Dev Module (FQBN esp32:esp32:esp32c3)
-- USB CDC On Boot must be enabled: Tools -> USB CDC On Boot -> Enabled in the Arduino IDE, or `--fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc` with arduino-cli. This exposes early boot/panic output over the USB serial port instead of swallowing it, and in testing also resolved intermittent USB-Serial/JTAG disconnects while promiscuous mode was active.
+- `flash.sh` builds with `CDCOnBoot=cdc` so USB CDC On Boot is enabled. This exposes early boot/panic output over the USB serial port instead of swallowing it, and in testing also resolved intermittent USB-Serial/JTAG disconnects while promiscuous mode was active. Flashing from the Arduino IDE instead needs the same setting done manually: Tools -> USB CDC On Boot -> Enabled.
 
 ## Design decisions
 - TTL cache (10s window): mobile OSes randomize MAC addresses periodically as a privacy measure. Without deduplication, this randomization would be misread as new devices, wildly overcounting. A short-lived cache (ConcurrentHashMap<macHash, lastSeenTimestamp>) filters this noise while still counting genuinely new devices.
