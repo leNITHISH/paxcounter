@@ -23,7 +23,7 @@ ESP32-C3 (Arduino/C++), Java (jSerialComm), DuckDB
 ## Run
 1. Flash the ESP32: `./flash.sh` (defaults to /dev/ttyACM0, pass a different port as the first arg)
 2. Run the server: `./run.sh`
-3. Query results: `cd pax-server && duckdb -c ".read analytics.sql"` (peak concurrent devices, RSSI/channel breakdowns, activity over time)
+3. Query results: `cd pax-server && duckdb -c ".read analytics.sql"` (peak concurrent devices, RSSI/channel breakdowns, activity over time, visit/dwell-time reconstruction)
 
 ## Testing
 `cd pax-server && mvn test` runs the unit tests: `TtlCacheTest` and `SequenceLinkerTest` cover the two deduplication layers directly (TTL expiry, sequence-number linking across rotated MACs, window expiry) without needing real hardware.
@@ -40,6 +40,7 @@ ESP32-C3 (Arduino/C++), Java (jSerialComm), DuckDB
 - Auto-detected serial port instead of a hardcoded path: scans all available ports via jSerialComm and matches on the ESP32's USB descriptor (Espressif/JTAG/CDC), so the same code runs unmodified across Linux, macOS, and Windows without the user needing to know the device path in advance.
 - Automatic serial reconnect: if the ESP32 drops off USB, a reset, a disconnect, a flaky USB-Serial/JTAG link, the service used to crash or spin. It now closes the stale port and polls every 2s until the device reappears, so a transient drop doesn't require restarting the whole process.
 - On-device ring buffer instead of printing straight from the promiscuous callback: probe sightings are queued into a fixed-size RAM ring buffer and only drained over serial once `Serial.isConnected()` is true, so a USB comms drop (the chip stays powered, the link just blips, e.g. the USB-Serial/JTAG flakiness above) no longer silently loses whatever was captured during the gap. This does not survive an actual power loss (unplugging the board's only USB cable cuts power too, wiping RAM); testing it for real means powering the board from a separate source and only pulling the data connection.
+- Visit reconstruction via a 2-minute gap threshold: raw sightings alone don't answer how long a device actually lingered. `analytics.sql` groups each device's (canonical_hash) sightings into contiguous "visits" with a gaps-and-islands window-function query (LAG to find the previous sighting, a new visit whenever the gap exceeds 2 minutes, a running SUM to assign visit ids). 2 minutes is deliberately larger than the TtlCache's 10s window and SequenceLinker's ~3s window, both of which filter noise within a visit rather than detect a real departure, and short enough to still separate genuinely distinct visits while tolerating normal idle-phone probe gaps.
 
 ## Known limitations / future work
 - Offline buffering only covers comms drops, not power loss: the on-device ring buffer queues sightings through a USB link blip and replays them once reconnected, but it lives in RAM, so it can't survive the board actually losing power (e.g. unplugging its only USB cable, which cuts power and data at once). Powering the board separately and only disconnecting the data line avoids that; true survival across a full power cycle would need flash/SD storage instead.
@@ -63,3 +64,4 @@ Note: this benchmark predates channel hopping and sequence-number linking, so it
 - Designed a heuristic linking layer using 802.11 sequence numbers to associate probe requests across MAC address rotations, improving unique-device accuracy beyond what exact-hash deduplication alone can provide.
 - Diagnosed and fixed an out-of-bounds memory read in the ESP32 firmware's 802.11 frame parsing that was crashing the chip under real traffic, and added automatic serial reconnect handling so the ingestion service recovers from USB/device drops without manual intervention.
 - Built a single-producer/single-consumer RAM ring buffer on the ESP32 to queue captured sightings through USB comms drops, verified correct (FIFO order, wraparound, overflow handling) with a standalone unit test isolated from hardware before flashing.
+- Wrote gaps-and-islands DuckDB window-function queries to reconstruct per-device visits and dwell time from raw sighting logs, validated against both real captured data and a hand-built synthetic dataset crafted to exercise the gap-splitting logic directly.
