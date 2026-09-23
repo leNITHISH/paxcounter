@@ -1,4 +1,4 @@
-# PaxCounter (Java)
+# PaxCounter
 
 A Wi-Fi crowd-density counter: an ESP32 in 802.11 promiscuous mode hops across channels 1-11 capturing Wi-Fi probe requests, hashes MAC addresses on-device for privacy, and streams them over serial to a Java service. The service links probes across MAC randomization using the 802.11 sequence number, deduplicates sightings with a TTL cache, logs metrics to CSV, and results are queried with DuckDB for density and trend analysis.
 
