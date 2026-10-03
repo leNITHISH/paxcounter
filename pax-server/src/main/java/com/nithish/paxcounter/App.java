@@ -85,7 +85,7 @@ public class App {
                         lineBuffer.setLength(0);
                         if (line.isEmpty()) continue;
 
-                        // expected format: <hash>,<rssi>,<channel>,<seq>
+                        // expected format: <hash>,<rssi>,<channel>,<seq>,<ieFingerprintHex>,<isRandomized>
                         String[] parts = line.split(",");
                         if (parts.length < 1) continue;
 
@@ -102,6 +102,8 @@ public class App {
                         int rssi = 0;
                         int channel = 0;
                         int seq = 0;
+                        byte[] ieFingerprint = new byte[4];
+                        boolean isRandomized = false;
                         if (parts.length >= 2) {
                             try {
                                 rssi = Integer.parseInt(parts[1].trim());
@@ -120,9 +122,20 @@ public class App {
                             } catch (NumberFormatException ignored) {
                             }
                         }
+                        if (parts.length >= 5) {
+                            String fp = parts[4].trim();
+                            if (fp.matches("[0-9a-fA-F]{8}")) {
+                                for (int b = 0; b < 4; b++) {
+                                    ieFingerprint[b] = (byte) Integer.parseInt(fp.substring(b * 2, b * 2 + 2), 16);
+                                }
+                            }
+                        }
+                        if (parts.length >= 6) {
+                            isRandomized = parts[5].trim().equals("1");
+                        }
 
                         totalProbes++;
-                        String canonicalHash = seqLinker.resolve(hash, seq);
+                        String canonicalHash = seqLinker.resolve(hash, seq, ieFingerprint, isRandomized);
                         boolean isNew = cache.registerAndCheckNew(canonicalHash);
                         if (isNew) uniqueDevices++;
 

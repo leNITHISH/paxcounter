@@ -1,6 +1,8 @@
 #include <WiFi.h>
 #include "esp_wifi.h"
 #include "mbedtls/md.h"
+#include "secrets.h"
+#include "ie_fingerprint.h"
 
 // Decoded probe sightings, buffered here instead of printed straight from
 // the callback, so a temporary USB disconnect doesn't just drop them. The
@@ -16,6 +18,8 @@ struct ProbeSighting {
     int8_t rssi;
     uint8_t channel;
     uint16_t seq;
+    uint8_t ieFingerprint[4];
+    bool isRandomized;
 };
 
 static ProbeSighting ringBuffer[RING_CAPACITY];
@@ -54,6 +58,20 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     // Source MAC is bytes 10-15 of the 802.11 header
     uint8_t *srcMac = &payload[10];
 
+    // Bit 0x02 of the first octet is the "locally administered" bit: a
+    // real, burned-in MAC always has it clear, a randomized one always has
+    // it set. Free to check (one AND on a buffer already in hand) and high
+    // value: a real MAC never rotates, so the server should never spend
+    // effort trying to link it to anything else.
+    bool isRandomized = (srcMac[0] & 0x02) != 0;
+
+    // IE fingerprint: a stability signal for linking across MAC rotation,
+    // independent of (and corroborating) the sequence-number check below.
+    // Frame body (the IEs) starts right after the 24-byte header this
+    // function already requires via the sig_len check above.
+    uint8_t ieFingerprint[4];
+    paxIeFingerprint(payload + 24, pkt->rx_ctrl.sig_len - 24, ieFingerprint);
+
     // Sequence Control is bytes 22-23 (little-endian): low 4 bits are the
     // fragment number, top 12 bits are the sequence number. The radio's
     // sequence counter keeps incrementing across MAC address rotations, so
@@ -62,14 +80,23 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     uint16_t seqControl = payload[22] | (payload[23] << 8);
     uint16_t seqNum = seqControl >> 4;
 
-    // Simple hash (SHA-256, truncated) for privacy
+    // HMAC-SHA256(PAX_PEPPER, srcMac), truncated, instead of a plain hash.
+    // An unsalted hash of a real (non-randomized) MAC is brute-forceable by
+    // anyone who gets only the CSV output and guesses a vendor OUI (2^24
+    // candidates per OUI). Keying with a secret pepper defeats that -- but
+    // it does NOT protect against physical/firmware access to this device
+    // (the pepper is readable from flash), and does NOT hide MACs from
+    // anyone capturing probe requests themselves, they're unencrypted
+    // management frames with the real MAC already in the clear over the
+    // air. This is privacy hardening against a CSV-only attacker, nothing
+    // more.
     unsigned char hash[32];
     mbedtls_md_context_t ctx;
     mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
-    mbedtls_md_starts(&ctx);
-    mbedtls_md_update(&ctx, srcMac, 6);
-    mbedtls_md_finish(&ctx, hash);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&ctx, (const unsigned char *)PAX_PEPPER, strlen(PAX_PEPPER));
+    mbedtls_md_hmac_update(&ctx, srcMac, 6);
+    mbedtls_md_hmac_finish(&ctx, hash);
     mbedtls_md_free(&ctx);
 
     // pkt->rx_ctrl.channel is the channel this packet was actually received on,
@@ -81,6 +108,8 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     sighting.rssi = pkt->rx_ctrl.rssi;
     sighting.channel = pkt->rx_ctrl.channel;
     sighting.seq = seqNum;
+    memcpy(sighting.ieFingerprint, ieFingerprint, 4);
+    sighting.isRandomized = isRandomized;
     ringPush(sighting);
 }
 
@@ -105,10 +134,12 @@ void loop() {
         ProbeSighting s;
         while (ringTail != ringHead) {
             s = ringBuffer[ringTail];
-            Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d\n",
+            Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d,%02x%02x%02x%02x,%d\n",
                 s.hash[0], s.hash[1], s.hash[2], s.hash[3],
                 s.hash[4], s.hash[5], s.hash[6], s.hash[7],
-                s.rssi, s.channel, s.seq);
+                s.rssi, s.channel, s.seq,
+                s.ieFingerprint[0], s.ieFingerprint[1], s.ieFingerprint[2], s.ieFingerprint[3],
+                s.isRandomized ? 1 : 0);
             ringTail = (ringTail + 1) % RING_CAPACITY;
         }
         if (ringDropped > 0) {

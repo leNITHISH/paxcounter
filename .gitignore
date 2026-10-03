@@ -1,3 +1,4 @@
 pax-server/target/
 pax-server/metrics.csv
 pax-server/raw_probes.csv
+paxcounter.ino/secrets.h

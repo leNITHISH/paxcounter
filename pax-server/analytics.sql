@@ -152,3 +152,79 @@ SELECT
 FROM per_visit
 GROUP BY visit_category
 ORDER BY visit_category;
+
+-- Occupancy over time: concurrent devices per minute, based on visit
+-- overlap rather than raw per-minute sightings. A device that probes once
+-- at the start of a long visit and again at the end would be missed by a
+-- naive "distinct hashes with a sighting this minute" count (see the
+-- sightings-per-minute query above) for every minute in between -- this
+-- counts a visit as present in every bucket its [visit_start, visit_end]
+-- range touches, not just the buckets where it happened to probe.
+-- Buckets are treated as [bucket_start, bucket_start + 1 minute) intervals,
+-- not single instants, since most visits here are sub-minute and would
+-- otherwise almost never line up with an exact minute boundary.
+WITH ordered AS (
+    SELECT
+        canonical_hash,
+        timestamp,
+        LAG(timestamp) OVER (
+            PARTITION BY canonical_hash ORDER BY timestamp
+        ) AS prev_timestamp
+    FROM probes
+),
+flagged AS (
+    SELECT
+        *,
+        CASE
+            WHEN prev_timestamp IS NULL
+                OR timestamp - prev_timestamp > INTERVAL '2 minutes'
+            THEN 1 ELSE 0
+        END AS is_new_visit
+    FROM ordered
+),
+visits AS (
+    SELECT
+        *,
+        SUM(is_new_visit) OVER (
+            PARTITION BY canonical_hash ORDER BY timestamp
+        ) AS visit_id
+    FROM flagged
+),
+visit_bounds AS (
+    SELECT
+        canonical_hash,
+        visit_id,
+        min(timestamp) AS visit_start,
+        max(timestamp) AS visit_end
+    FROM visits
+    GROUP BY canonical_hash, visit_id
+),
+time_buckets AS (
+    SELECT unnest(generate_series(
+        date_trunc('minute', (SELECT min(timestamp) FROM probes)),
+        date_trunc('minute', (SELECT max(timestamp) FROM probes)),
+        INTERVAL '1 minute'
+    )) AS bucket_start
+)
+SELECT
+    bucket_start,
+    count(visit_bounds.visit_id) AS concurrent_devices
+FROM time_buckets
+LEFT JOIN visit_bounds
+    ON visit_bounds.visit_start < bucket_start + INTERVAL '1 minute'
+    AND visit_bounds.visit_end >= bucket_start
+GROUP BY bucket_start
+ORDER BY bucket_start;
+
+-- Linking effectiveness over time: per-minute comparison of distinct raw
+-- MAC hashes vs distinct canonical (sequence-linked) devices, showing how
+-- much correction SequenceLinker applies as it happens rather than as one
+-- single whole-session total (see the raw-vs-canonical query above).
+SELECT
+    date_trunc('minute', timestamp) AS minute,
+    count(DISTINCT mac_hash) AS distinct_raw_hashes,
+    count(DISTINCT canonical_hash) AS distinct_canonical_devices,
+    count(DISTINCT mac_hash) - count(DISTINCT canonical_hash) AS hashes_merged_by_linking
+FROM probes
+GROUP BY minute
+ORDER BY minute;
