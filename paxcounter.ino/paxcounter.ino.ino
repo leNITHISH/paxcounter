@@ -20,6 +20,7 @@ struct ProbeSighting {
     uint16_t seq;
     uint8_t ieFingerprint[4];
     bool isRandomized;
+    uint32_t captureMillis; // millis() at the moment this frame was captured
 };
 
 static ProbeSighting ringBuffer[RING_CAPACITY];
@@ -103,6 +104,14 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     // reported by the radio itself. That's more accurate than reading back
     // whatever channel loop() last requested, which can be mid-hop by the
     // time a packet lands -- so we log the hardware's value, not our own state.
+    //
+    // captureMillis is recorded here, at the moment of capture, not when
+    // loop() eventually drains and prints it. The server's linking and
+    // dedup windows previously used the host's arrival-time clock, which is
+    // wrong whenever there's any delay between capture and printing, most
+    // sharply after a USB reconnect, when the ring buffer replays its whole
+    // backlog in one burst and everything in it would otherwise appear to
+    // have happened in the same few milliseconds.
     ProbeSighting sighting;
     memcpy(sighting.hash, hash, 8);
     sighting.rssi = pkt->rx_ctrl.rssi;
@@ -110,6 +119,7 @@ void promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     sighting.seq = seqNum;
     memcpy(sighting.ieFingerprint, ieFingerprint, 4);
     sighting.isRandomized = isRandomized;
+    sighting.captureMillis = millis();
     ringPush(sighting);
 }
 
@@ -134,12 +144,12 @@ void loop() {
         ProbeSighting s;
         while (ringTail != ringHead) {
             s = ringBuffer[ringTail];
-            Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d,%02x%02x%02x%02x,%d\n",
+            Serial.printf("%02x%02x%02x%02x%02x%02x%02x%02x,%d,%d,%d,%02x%02x%02x%02x,%d,%lu\n",
                 s.hash[0], s.hash[1], s.hash[2], s.hash[3],
                 s.hash[4], s.hash[5], s.hash[6], s.hash[7],
                 s.rssi, s.channel, s.seq,
                 s.ieFingerprint[0], s.ieFingerprint[1], s.ieFingerprint[2], s.ieFingerprint[3],
-                s.isRandomized ? 1 : 0);
+                s.isRandomized ? 1 : 0, (unsigned long)s.captureMillis);
             ringTail = (ringTail + 1) % RING_CAPACITY;
         }
         if (ringDropped > 0) {

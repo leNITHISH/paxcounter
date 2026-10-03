@@ -85,7 +85,7 @@ public class App {
                         lineBuffer.setLength(0);
                         if (line.isEmpty()) continue;
 
-                        // expected format: <hash>,<rssi>,<channel>,<seq>,<ieFingerprintHex>,<isRandomized>
+                        // expected format: <hash>,<rssi>,<channel>,<seq>,<ieFingerprintHex>,<isRandomized>,<captureMillis>
                         String[] parts = line.split(",");
                         if (parts.length < 1) continue;
 
@@ -133,10 +133,23 @@ public class App {
                         if (parts.length >= 6) {
                             isRandomized = parts[5].trim().equals("1");
                         }
+                        // captureMillis is the ESP32's own clock, not host
+                        // arrival time -- see SequenceLinker/TtlCache for why
+                        // that matters. Fall back to host time only for a
+                        // malformed line missing the field; that one sighting
+                        // degrades to the old (less accurate) behavior rather
+                        // than being dropped.
+                        long captureMillis = System.currentTimeMillis();
+                        if (parts.length >= 7) {
+                            try {
+                                captureMillis = Long.parseLong(parts[6].trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
 
                         totalProbes++;
-                        String canonicalHash = seqLinker.resolve(hash, seq, ieFingerprint, isRandomized);
-                        boolean isNew = cache.registerAndCheckNew(canonicalHash);
+                        String canonicalHash = seqLinker.resolve(hash, seq, ieFingerprint, isRandomized, captureMillis);
+                        boolean isNew = cache.registerAndCheckNew(canonicalHash, captureMillis);
                         if (isNew) uniqueDevices++;
 
                         rawLogger.logEvent(hash, canonicalHash, rssi, channel, seq);
